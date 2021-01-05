@@ -1,0 +1,45 @@
+rax = 24066367755926
+tsc_base = 1727869341               // nt_tsc_base?
+minus_tsc_base = rax - tsc_base
+scale = 1478983228                  // nt_scale?
+scaled = minus_tsc_base * scale     // integer potentially greater than 64 bits in length
+shifted = scaled >> 32      
+base = 9245068404755
+plus_base = shifted + base
+
+
+111100010010110011100011010110000000100001111101111010110110011100001011100
+
+shiftL 1929 64 .|. 7429461933312129116                                              -- 75 bit integer
+
+24064639886585 * 1478983228 = 35591198780119037196380                               -- scaled
+11110001001  0110011100011010110000000100001111101111010110110011100001011100       -- 75 bit integer
+
+35591198780119037196380 >> 32 = 8286721720387
+0000000000000000000001111000100101100111000110101100000001000011                    -- shifted
+
+8286721720387 + 9245068404755 = 17531790125142
+
+/*
+ * Nanotime/mach_absolutime_time
+ * -----------------------------
+ * The timestamp counter (TSC) - which counts cpu clock cycles and can be read
+ * efficiently by the kernel and in userspace - is the reference for all timing.
+ * The cpu clock rate is platform-dependent and may stop or be reset when the
+ * processor is napped/slept.  As a result, nanotime is the software abstraction
+ * used to maintain a monotonic clock, adjusted from an outside reference as needed.
+ *
+ * The kernel maintains nanotime information recording:
+ * 	- the ratio of tsc to nanoseconds
+ *	  with this ratio expressed as a 32-bit scale and shift
+ *	  (power of 2 divider);
+ *	- { tsc_base, ns_base } pair of corresponding timestamps.
+ *
+ * The tuple {tsc_base, ns_base, scale, shift} is exported in the commpage 
+ * for the userspace nanotime routine to read.
+ *
+ * All of the routines which update the nanotime data are non-reentrant.  This must
+ * be guaranteed by the caller.
+ */
+
+
