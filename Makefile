@@ -1,17 +1,24 @@
-PROG := time_test
+TIME_TEST := time_test
+TSC := tsc
 EXT :=
 CFLAGS := -Wall -Wextra -O -g
+GHC := ghc
 
-$(PROG): time.c
-	$(CC) $(CFLAGS) -o $@$(EXT) $^ 
+$(TIME_TEST):
+$(TSC):
 
-# -fverbose-asm
-$(PROG).s: CFLAGS += -S 
-$(PROG).s: EXT := .s
-$(PROG).s: $(PROG)
+%:: %.c
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+%.s:: CFLAGS += -S
+%.s:: %.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+absTime: absTime.hs
+	$(GHC) -o $@ $^
 
 .PHONY: clean
 clean:
-	rm -rf *.s *.o $(PROG) *.dSYM
+	rm -rf *.s *.o $(TIME_TEST) $(TSC) *.dSYM
 	rm -rf *.hi *.o absTime
 

@@ -9,6 +9,11 @@
 #define ONE_SEC_NS 1000000000
 
 int __attribute__((noinline)) clock_sleep_test() {
+    // for example
+    // CLOCKS_PER_SEC = 1000000
+    // clock = 810170 microseconds
+    // seconds = clock / CLOCKS_PER_SEC
+    // 0.810170 seconds
     clock_t cl = clock();
     struct timespec ts = { 1, 0 };
     if (nanosleep(&ts, NULL)) {
