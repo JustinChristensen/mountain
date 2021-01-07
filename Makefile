@@ -1,5 +1,6 @@
 TIME_TEST := time_test
 TSC := tsc
+ABS_TIME := absTime
 EXT :=
 CFLAGS := -Wall -Wextra -O -g
 GHC := ghc
@@ -14,8 +15,11 @@ $(TSC):
 %.s:: %.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-absTime: absTime.hs
+$(ABS_TIME): absTime.hs
 	$(GHC) -o $@ $^
+
+.PHONY:
+all: $(TIME_TEST) $(TSC) $(ABS_TIME)
 
 .PHONY: clean
 clean:

@@ -64,7 +64,7 @@ int __attribute__((noinline)) gettime_loop_test() {
 unsigned long rdtsc() {
     unsigned long tsc; unsigned lo;
     asm volatile ("lfence\n\trdtsc\n\tlfence" : "=a" (lo), "=d" (tsc));
-    return (tsc << 32) | lo;        
+    return (tsc << 32) | lo;
 }
 
 int __attribute__((noinline)) tsc_loop_test() {
@@ -81,11 +81,20 @@ int __attribute__((noinline)) mach_time_loop_test() {
     return 0;
 }
 
+int __attribute__((noinline)) mhz_test() {
+    struct timespec ts = { 2, 0 };
+    unsigned long start = rdtsc();
+    nanosleep(&ts, NULL);
+    printf("clock speed: %.1lf MHz\n", (rdtsc() - start) / (2 * 1e6));
+    return 0;
+}
+
 int main() {
-    return 
+    return
         clock_sleep_test() ||
         clock_loop_test() ||
-        gettime_loop_test() || 
-        tsc_loop_test() || 
-        mach_time_loop_test();
+        gettime_loop_test() ||
+        tsc_loop_test() ||
+        mach_time_loop_test() ||
+        mhz_test();
 }

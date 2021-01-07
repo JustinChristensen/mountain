@@ -11,5 +11,5 @@ int main() {
         "a" (eax)
     );
 
-    printf("den: %u, num: %u, core_freq_hz: %u, res: %u\n", den, num, core_freq_hz, res);
+    printf("den: %u\nnum: %u\ncore_freq_hz: %u\nres: %u\n", den, num, core_freq_hz, res);
 }
