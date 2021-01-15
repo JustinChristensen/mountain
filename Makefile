@@ -3,7 +3,7 @@ TSC := tsc
 ABS_TIME := absTime
 MOUNTAIN := mountain
 EXT :=
-CFLAGS += -Wall -Wextra -O -g
+CFLAGS += -Wall -Wextra -g
 GHC := ghc
 
 $(TIME_TEST):

@@ -4,10 +4,13 @@
 #include <stdbool.h>
 #include <string.h>
 
+#define MAX_FLAG 128
+
 enum arg_type {
     UNKNOWN_ARG,
     MISSING_VAL,
     INVALID_VAL,
+    FLAG_OVERFLOW,
     HELP,
     VERSION,
     STRIDE_INTERVAL,
@@ -19,7 +22,7 @@ enum arg_type {
 
 struct arg {
     enum arg_type type;
-    char flag[128];
+    char flag[MAX_FLAG];
     union {
         uint8_t u8;
         char *s;
@@ -54,7 +57,7 @@ static void uint8_val(char const *s, struct arg *arg) {
 }
 
 static void setflag(char *flag, char const *s, char const *e) {
-    size_t const n = e - s;
+    size_t const n = e - s < MAX_FLAG ? e - s : MAX_FLAG - 1;
     strncpy(flag, s, n);
     flag[n] = '\0';
 }
@@ -75,10 +78,15 @@ static bool _parse_arg(
     if (lflag && *s == '-') {
         char const *f = ++s;
         while (*s && *s != '=') s++;
-        if (strncmp(lflag, f, s - f)) return false;
 
-        arg->type = type;
-        setflag(arg->flag, a, s);
+        if (s - a < MAX_FLAG) {
+            if (!*f || strncmp(lflag, f, s - f)) return false;
+            setflag(arg->flag, a, s);
+            arg->type = type;
+        } else {
+            setflag(arg->flag, a, s);
+            arg->type = FLAG_OVERFLOW;
+        }
     } else if (sflag && *s) {
         if (*s++ != sflag) return false;
 
@@ -119,21 +127,34 @@ static void print_usage(FILE *handle, char const *prog) {
     fprintf(handle, "\n");
 }
 
+static void unknown_arg(struct arg *arg, char const *s) {
+    char const *b = s;
+
+    arg->type = UNKNOWN_ARG;
+
+    if (*s == '-') {
+        s++;
+        if (*s == '-') do s++; while (*s && *s != '=');
+        else if (*s) s++;
+    } else while (*s) s++;
+
+    setflag(arg->flag, b, s);
+}
+
 static char const **parse_arg(struct arg *arg, char const **argv) {
     bool found_arg =
-        _parse_arg("help", 'h', HELP, NULL, arg, &argv) ||
-        _parse_arg("version", 'v', VERSION, NULL, arg, &argv) ||
-        _parse_arg("stride-interval", 'n', STRIDE_INTERVAL, uint8_val, arg, &argv) ||
-        _parse_arg("start-stride", 's', START_STRIDE, uint8_val, arg, &argv) ||
-        _parse_arg("end-stride", 'e', END_STRIDE, uint8_val, arg, &argv) ||
-        _parse_arg("min-size", 'i', MIN_SIZE, uint8_val, arg, &argv) ||
-        _parse_arg("max-size", 'a', MAX_SIZE, uint8_val, arg, &argv);
+       _parse_arg("help", 'h', HELP, NULL, arg, &argv)
+    || _parse_arg("version", 'v', VERSION, NULL, arg, &argv)
+    || _parse_arg("stride-interval", 'n', STRIDE_INTERVAL, uint8_val, arg, &argv)
+    || _parse_arg("start-stride", 's', START_STRIDE, uint8_val, arg, &argv)
+    || _parse_arg("end-stride", 'e', END_STRIDE, uint8_val, arg, &argv)
+    || _parse_arg("min-size", 'i', MIN_SIZE, uint8_val, arg, &argv)
+    || _parse_arg("max-size", 'a', MAX_SIZE, uint8_val, arg, &argv)
+    ;
 
+    // copy flag
     if (!found_arg) {
-        char const *s = *argv;
-        while (*s && *s != '=') s++;
-        arg->type = UNKNOWN_ARG;
-        setflag(arg->flag, *argv, s);
+        unknown_arg(arg, *argv);
         argv++;
     }
 
@@ -165,6 +186,10 @@ static bool parse_args(struct args *args, char const *version, char const **argv
                 print_usage(stdout, prog);
                 exit(0);
                 break;
+            case FLAG_OVERFLOW:
+                fprintf(stderr, "flag overflow %s\n", arg.flag);
+                success = false;
+                break;
             case MISSING_VAL:
                 fprintf(stderr, "missing value for flag %s\n", arg.flag);
                 success = false;
@@ -186,6 +211,40 @@ static bool parse_args(struct args *args, char const *version, char const **argv
     return success;
 }
 
+static void debug_args(struct args const *args) {
+    fprintf(stderr, "%s\n", "args:");
+    fprintf(stderr,
+        "  stride_interval = %hhu\n"
+        "  start_stride = %hhu\n"
+        "  end_stride = %hhu\n"
+        "  min_size_p2 = %hhu\n"
+        "  max_size_p2 = %hhu\n",
+        args->stride_interval,
+        args->start_stride,
+        args->end_stride,
+        args->min_size_p2,
+        args->max_size_p2);
+}
+
+static bool validate_args(struct args const *args) {
+    short const MAX_POWER = 32;
+    char const *SIZE_FMT = "%s size cannot be greater than %ld bytes, choose a power smaller than %d.\n";
+
+    bool success = false;
+    if (args->min_size_p2 > MAX_POWER)
+        success = false, fprintf(stderr, SIZE_FMT, "minimum", 1L << MAX_POWER, MAX_POWER);
+    if (args->max_size_p2 > MAX_POWER)
+        success = false, fprintf(stderr, SIZE_FMT, "maximum", 1L << MAX_POWER, MAX_POWER);
+    if (args->end_stride > args->start_stride) {
+        if (args->end_stride - args->start_stride < args->stride_interval)
+            success = false, fprintf(stderr, "stride interval must be less than or equal to the difference between the start and end stride\n");
+    } else success = false, fprintf(stderr, "start stride must be less than ending stride\n");
+    if (args->min_size_p2 > args->max_size_p2)
+        success = false, fprintf(stderr, "max size must be greater than or equal to min size\n");
+
+    return success;
+}
+
 int main(int __attribute__((unused)) argc, char const *argv[]) {
     struct args args = {
         .stride_interval = 2,
@@ -198,20 +257,11 @@ int main(int __attribute__((unused)) argc, char const *argv[]) {
     if (!parse_args(&args, "1.0.0", argv))
         return EXIT_FAILURE;
 
-    if (getenv("DEBUG")) {
-        fprintf(stderr, "%s\n", "args:");
-        fprintf(stderr,
-            "  stride_interval = %hhu\n"
-            "  start_stride = %hhu\n"
-            "  end_stride = %hhu\n"
-            "  min_size_p2 = %hhu\n"
-            "  max_size_p2 = %hhu\n",
-            args.stride_interval,
-            args.start_stride,
-            args.end_stride,
-            args.min_size_p2,
-            args.max_size_p2);
-    }
+    if (getenv("DEBUG"))
+        debug_args(&args);
+
+    if (!validate_args(&args))
+        return EXIT_FAILURE;
 
     return EXIT_SUCCESS;
 }
