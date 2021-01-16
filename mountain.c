@@ -1,8 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <string.h>
+#include <time.h>
+#include <stdarg.h>
 
 #define MAX_FLAG 128
 
@@ -227,10 +230,10 @@ static void debug_args(struct args const *args) {
 }
 
 static bool validate_args(struct args const *args) {
-    short const MAX_POWER = 32;
-    char const *SIZE_FMT = "%s size cannot be greater than %ld bytes, choose a power smaller than %d.\n";
+#define MAX_POWER 32
+#define SIZE_FMT "%s size cannot be greater than %ld bytes, choose a power smaller than %d.\n"
 
-    bool success = false;
+    bool success = true;
     if (args->min_size_p2 > MAX_POWER)
         success = false, fprintf(stderr, SIZE_FMT, "minimum", 1L << MAX_POWER, MAX_POWER);
     if (args->max_size_p2 > MAX_POWER)
@@ -245,7 +248,46 @@ static bool validate_args(struct args const *args) {
     return success;
 }
 
-int main(int __attribute__((unused)) argc, char const *argv[]) {
+static uint64_t now() {
+#define ONE_SEC_NS 1000000000
+    struct timespec ts;
+
+    // CLOCK_MONOTONIC on OSX only supports microsecond precision, and each nanosecond counts
+    if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts)) {
+        fprintf(stderr, "error reading current time\n");
+        abort();
+    }
+
+    return ts.tv_sec * ONE_SEC_NS + ts.tv_nsec;
+}
+
+static void read_data(volatile int32_t *data, unsigned n, unsigned stride) {
+    for (unsigned i = 0; i < n; i += stride) data[i];
+}
+
+static void vread_data(va_list args) {
+    // UB, but I'll live with it
+    read_data(
+        va_arg(args, int32_t *),
+        va_arg(args, unsigned),
+        va_arg(args, unsigned));
+}
+
+static uint64_t bench(void (*fn)(va_list args), ...) {
+    va_list args;
+    va_start(args, fn);
+
+    uint64_t start = now();
+    (*fn)(args);
+    uint64_t end = now();
+
+    va_end(args);
+
+    return end - start;
+}
+
+int main(int argc, char const *argv[]) {
+    (void) argc;
     struct args args = {
         .stride_interval = 2,
         .start_stride = 1,
@@ -262,6 +304,23 @@ int main(int __attribute__((unused)) argc, char const *argv[]) {
 
     if (!validate_args(&args))
         return EXIT_FAILURE;
+
+    volatile int32_t *data = malloc(1 << args.max_size_p2);
+
+    if (!data) {
+        fprintf(stderr, "data allocation failed\n");
+        return EXIT_FAILURE;
+    }
+
+    for (unsigned size = 1 << args.max_size_p2; size >= 1 << args.min_size_p2; size >>= 1)
+        for (unsigned stride = args.start_stride; stride <= args.end_stride; stride += args.stride_interval) {
+            unsigned n = size / sizeof *data;
+            read_data(data, n, stride); // prime cache
+            uint64_t time = bench(vread_data, data, n, stride);
+            printf("%u %u %"PRIu64"\n", size, stride, time);
+        }
+
+    free((void *) data);
 
     return EXIT_SUCCESS;
 }
