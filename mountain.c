@@ -381,10 +381,9 @@ static uint64_t bench(struct bench_params const p, void (*fn)(va_list args), ...
         uint64_t elapsed = now() - start;
         va_end(args);
 
-        try_shift(samples, s, p);
+        if (p.shift_samples) try_shift(samples, s, p);
         sort_samples(samples, add_sample(samples, s++, elapsed, p));
     } while (!has_converged(samples, s, p) && s < p.max_samples);
-
 
     uint64_t result = samples[0];
     free(samples);
