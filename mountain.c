@@ -40,6 +40,20 @@ struct args {
             max_size_p2;
 };
 
+struct bench_params {
+    bool prime_cache;
+    unsigned k,
+        max_samples,
+        shift_samples,
+        denom,
+        base_spread;
+};
+
+static bool debug(char const *key) {
+    char *dbg = getenv("DEBUG");
+    return dbg != NULL && ((key && !strcmp(key, dbg)) || !strcmp("*", dbg));
+}
+
 static void uint8_val(char const *s, struct arg *arg) {
     char *end = NULL;
     long n = strtol(s, &end, 10);
@@ -80,7 +94,7 @@ static bool _parse_arg(
     char const *v = NULL;
     if (lflag && *s == '-') {
         char const *f = ++s;
-        while (*s && *s != '=') s++;
+        s += strcspn(s, "=");
 
         if (s - a < MAX_FLAG) {
             if (!*f || strncmp(lflag, f, s - f)) return false;
@@ -137,7 +151,7 @@ static void unknown_arg(struct arg *arg, char const *s) {
 
     if (*s == '-') {
         s++;
-        if (*s == '-') do s++; while (*s && *s != '=');
+        if (*s == '-') s++, s += strcspn(s, "=");
         else if (*s) s++;
     } else while (*s) s++;
 
@@ -229,10 +243,9 @@ static void debug_args(struct args const *args) {
         args->max_size_p2);
 }
 
-static bool validate_args(struct args const *args) {
 #define MAX_POWER 32
 #define SIZE_FMT "%s size cannot be greater than %ld bytes, choose a power smaller than %d.\n"
-
+static bool validate_args(struct args const *args) {
     bool success = true;
     if (args->min_size_p2 > MAX_POWER)
         success = false, fprintf(stderr, SIZE_FMT, "minimum", 1L << MAX_POWER, MAX_POWER);
@@ -248,8 +261,8 @@ static bool validate_args(struct args const *args) {
     return success;
 }
 
-static uint64_t now() {
 #define ONE_SEC_NS 1000000000
+static uint64_t now() {
     struct timespec ts;
 
     // CLOCK_MONOTONIC on OSX only supports microsecond precision, and each nanosecond counts
@@ -266,28 +279,123 @@ static void read_data(volatile int32_t *data, unsigned n, unsigned stride) {
 }
 
 static void vread_data(va_list args) {
-    // UB, but I'll live with it
+    // UB (argument evaluation order not defined), but I'll live with it
     read_data(
         va_arg(args, int32_t *),
         va_arg(args, unsigned),
         va_arg(args, unsigned));
 }
 
-static uint64_t bench(void (*fn)(va_list args), ...) {
-    va_list args;
-    va_start(args, fn);
-
-    uint64_t start = now();
-    (*fn)(args);
-    uint64_t end = now();
-
-    va_end(args);
-
-    return end - start;
+static void debug_bench_params(struct bench_params const *p) {
+    fprintf(stderr, "%s\n", "bench_params:");
+    fprintf(stderr,
+        "  prime_cache = %s\n"
+        "  k = %u\n"
+        "  max_samples = %u\n"
+        "  shift_samples = %u\n"
+        "  denom = %u\n"
+        "  base_spread = %u\n",
+        p->prime_cache ? "true" : "false",
+        p->k,
+        p->max_samples,
+        p->shift_samples,
+        p->denom,
+        p->base_spread);
 }
 
-int main(int argc, char const *argv[]) {
-    (void) argc;
+static bool has_converged(uint64_t *samples, unsigned s, struct bench_params const p) {
+    uint64_t delta = samples[p.k - 1] - samples[0];
+    uint64_t spread = samples[0] / p.denom + p.base_spread;
+
+    if (s >= p.k && debug("converging"))
+        fprintf(stderr, "converging... delta: %"PRIu64", spread: %"PRIu64"\n", delta, spread);
+
+    return s >= p.k && delta < spread;
+}
+
+static void sort_samples(uint64_t *samples, unsigned i) {
+    unsigned const k = i;
+
+    while (i && samples[i - 1] > samples[i]) {
+        uint64_t t = samples[i - 1];
+        samples[i - 1] = samples[i];
+        samples[i] = t;
+        i--;
+    }
+
+    i = 0;
+    if (debug("sorted")) {
+        fprintf(stderr, "sorted samples (k = %u): [", k);
+        fprintf(stderr, "%"PRIu64"", samples[i++]);
+        while (i <= k)
+            fprintf(stderr, ", %"PRIu64"", samples[i++]);
+        fprintf(stderr, "]\n");
+    }
+}
+
+static unsigned add_sample(
+    uint64_t *samples, unsigned s, uint64_t elapsed,
+    struct bench_params const p
+) {
+    unsigned i = s < p.k ? s : p.k - 1;
+
+    if (s < p.k || elapsed < samples[i])
+        samples[i] = elapsed;
+
+    return i;
+}
+
+static void try_shift(uint64_t *samples, unsigned s, struct bench_params const p) {
+    if (s < p.k || s % p.shift_samples > 0) return;
+
+    unsigned i = 0;
+    while (i < p.k - 1) samples[i] = samples[i + 1], i++;
+    samples[p.k - 1] = UINT64_MAX;  // add_sample will replace this
+
+    i = 0;
+    if (debug("shifts")) {
+        fprintf(stderr, "shifted: [");
+        fprintf(stderr, "%"PRIu64"", samples[i++]);
+        while (i <= p.k - 1)
+            fprintf(stderr, ", %"PRIu64"", samples[i++]);
+        fprintf(stderr, "]\n");
+    }
+}
+
+static uint64_t bench(struct bench_params const p, void (*fn)(va_list args), ...) {
+    va_list args;
+
+    uint64_t *samples = calloc(p.k, sizeof *samples);
+    unsigned s = 0;
+
+    if (p.prime_cache) {
+        va_start(args, fn);
+        (*fn)(args);
+        va_end(args);
+    }
+
+    do {
+        va_start(args, fn);
+        uint64_t start = now();
+        (*fn)(args);
+        uint64_t elapsed = now() - start;
+        va_end(args);
+
+        try_shift(samples, s, p);
+        sort_samples(samples, add_sample(samples, s++, elapsed, p));
+    } while (!has_converged(samples, s, p) && s < p.max_samples);
+
+
+    uint64_t result = samples[0];
+    free(samples);
+
+    if (debug("collection"))
+        fprintf(stderr, "collected %d samples, result: %"PRIu64"\n", s, result);
+
+    return result;
+}
+
+int main(int argc, char const *argv[]) { (void) argc;
     struct args args = {
         .stride_interval = 2,
         .start_stride = 1,
@@ -299,7 +407,7 @@ int main(int argc, char const *argv[]) {
     if (!parse_args(&args, "1.0.0", argv))
         return EXIT_FAILURE;
 
-    if (getenv("DEBUG"))
+    if (debug("args"))
         debug_args(&args);
 
     if (!validate_args(&args))
@@ -312,11 +420,22 @@ int main(int argc, char const *argv[]) {
         return EXIT_FAILURE;
     }
 
+    struct bench_params params = {
+        .prime_cache = true,
+        .k = 3,                 // keep 3 samples
+        .max_samples = 300,     // give it 200 chances to converge
+        .shift_samples = 50,    // every n samples shift the minimum off (helps with convergence if early readings were fast)
+        .denom = 100,           // spread = min_value / denom + base_spread
+        .base_spread = 2        // at least 3 nanoseconds
+    };
+
+    if (debug("bench_params"))
+        debug_bench_params(&params);
+
     for (unsigned size = 1 << args.max_size_p2; size >= 1 << args.min_size_p2; size >>= 1)
         for (unsigned stride = args.start_stride; stride <= args.end_stride; stride += args.stride_interval) {
             unsigned n = size / sizeof *data;
-            read_data(data, n, stride); // prime cache
-            uint64_t time = bench(vread_data, data, n, stride);
+            uint64_t time = bench(params, vread_data, data, n, stride);
             printf("%u %u %"PRIu64"\n", size, stride, time);
         }
 

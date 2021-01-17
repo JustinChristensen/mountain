@@ -8,7 +8,7 @@
 #define LOOP_END ((1 << 30) >> 1)
 #define ONE_SEC_NS 1000000000
 
-int __attribute__((noinline)) clock_sleep_test() {
+static int __attribute__((noinline)) clock_sleep_test() {
     // for example
     // CLOCKS_PER_SEC = 1000000
     // clock = 810170 microseconds
@@ -26,14 +26,14 @@ int __attribute__((noinline)) clock_sleep_test() {
     return 0;
 }
 
-int __attribute__((noinline)) clock_loop_test() {
+static int __attribute__((noinline)) clock_loop_test() {
     clock_t cl = clock();
     for (volatile long i = 0; i < LOOP_END; i++);
     printf("clock loop: %lu microseconds\n", clock() - cl);
     return 0;
 }
 
-int __attribute__((noinline)) gettime_loop_test() {
+static int __attribute__((noinline)) gettime_loop_test() {
     struct timespec start;
     if (clock_gettime(CLOCK_MONOTONIC_RAW, &start)) {
         perror(NULL);
@@ -61,31 +61,43 @@ int __attribute__((noinline)) gettime_loop_test() {
     return 0;
 }
 
-unsigned long rdtsc() {
+static unsigned long rdtsc() {
     unsigned long tsc; unsigned lo;
     asm volatile ("lfence\n\trdtsc\n\tlfence" : "=a" (lo), "=d" (tsc));
     return (tsc << 32) | lo;
 }
 
-int __attribute__((noinline)) tsc_loop_test() {
+static int __attribute__((noinline)) tsc_loop_test() {
     unsigned long start = rdtsc();
     for (volatile long i = 0; i < LOOP_END; i++);
     printf("rdtsc loop: %lu cycles\n", rdtsc() - start);
     return 0;
 }
 
-int __attribute__((noinline)) mach_time_loop_test() {
+static int __attribute__((noinline)) mach_time_loop_test() {
     uint64_t start = mach_absolute_time();
     for (volatile long i = 0; i < LOOP_END; i++);
     printf("mach_absolute_time loop: %"PRIu64" nanoseconds\n", mach_absolute_time() - start);
     return 0;
 }
 
-int __attribute__((noinline)) mhz_test() {
+static int __attribute__((noinline)) mhz_test() {
     struct timespec ts = { 2, 0 };
     unsigned long start = rdtsc();
     nanosleep(&ts, NULL);
     printf("clock speed: %.1lf MHz\n", (rdtsc() - start) / (2 * 1e6));
+    return 0;
+}
+
+static int report_res() {
+    struct timespec ts;
+    clock_getres(CLOCK_REALTIME, &ts);
+    printf("clock_getres:\n");
+    printf("CLOCK_REALTIME: %lu nanoseconds\n", ts.tv_nsec);
+    clock_getres(CLOCK_MONOTONIC, &ts);
+    printf("CLOCK_MONOTONIC: %lu nanoseconds\n", ts.tv_nsec);
+    clock_getres(CLOCK_MONOTONIC_RAW, &ts);
+    printf("CLOCK_MONOTONIC_RAW: %lu nanoseconds\n", ts.tv_nsec);
     return 0;
 }
 
@@ -96,5 +108,6 @@ int main() {
         gettime_loop_test() ||
         tsc_loop_test() ||
         mach_time_loop_test() ||
-        mhz_test();
+        mhz_test() ||
+        report_res();
 }
