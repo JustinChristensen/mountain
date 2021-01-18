@@ -20,7 +20,9 @@ enum arg_type {
     START_STRIDE,
     END_STRIDE,
     MIN_SIZE,
-    MAX_SIZE
+    MAX_SIZE,
+    PRIME_CACHE,
+    USE_SINK
 };
 
 struct arg {
@@ -38,10 +40,11 @@ struct args {
             end_stride,
             min_size_p2,     // size=2^n where n=[10,27] and min_size < max_size
             max_size_p2;
+    bool use_sink, prime_cache;
 };
 
 struct bench_params {
-    bool prime_cache;
+    bool use_sink, prime_cache;
     unsigned k,
         max_samples,
         shift_samples,
@@ -136,11 +139,13 @@ static void print_usage(FILE *handle, char const *prog) {
     fprintf(handle, "usage: %s [options]\n\n", prog);
     fprintf(handle, "Generate a memory mountain\n\n");
     fprintf(handle, "options:\n");
-    fprintf(handle, optfmt, "-n,--stride-interval", "Interval to increase the stride by (+= 2)");
-    fprintf(handle, optfmt, "-s,--start-stride", "Starting stride (1)");
-    fprintf(handle, optfmt, "-e,--end-stride", "Ending stride (32)");
-    fprintf(handle, optfmt, "-i,--min-size", "Minimum size as a power of two (2^n where n = 10 or 1 KB)");
-    fprintf(handle, optfmt, "-a,--max-size", "Maximum size as a power of two (2^n where n = 27 or 128 MB)");
+    fprintf(handle, optfmt, "-n, --stride-interval", "Interval to increase the stride by (+= 2).");
+    fprintf(handle, optfmt, "-s, --start-stride", "Starting stride (1).");
+    fprintf(handle, optfmt, "-e, --end-stride", "Ending stride (32).");
+    fprintf(handle, optfmt, "-i, --min-size", "Minimum size as a power of two (2^n where n = 10 or 1 KB).");
+    fprintf(handle, optfmt, "-a, --max-size", "Maximum size as a power of two (2^n where n = 27 or 128 MB).");
+    fprintf(handle, optfmt, "--use-sink", "Accumulate the results of the loads (forcing loads to retire?).");
+    fprintf(handle, optfmt, "--prime-cache", "Attempt to prime the cache before entering the test loop.");
     fprintf(handle, "\n");
 }
 
@@ -167,6 +172,8 @@ static char const **parse_arg(struct arg *arg, char const **argv) {
     || _parse_arg("end-stride", 'e', END_STRIDE, uint8_val, arg, &argv)
     || _parse_arg("min-size", 'i', MIN_SIZE, uint8_val, arg, &argv)
     || _parse_arg("max-size", 'a', MAX_SIZE, uint8_val, arg, &argv)
+    || _parse_arg("prime-cache", 0, PRIME_CACHE, NULL, arg, &argv)
+    || _parse_arg("use-sink", 0, USE_SINK, NULL, arg, &argv)
     ;
 
     // copy flag
@@ -195,6 +202,8 @@ static bool parse_args(struct args *args, char const *version, char const **argv
             case END_STRIDE:        args->end_stride = arg.u8; break;
             case MIN_SIZE:          args->min_size_p2 = arg.u8; break;
             case MAX_SIZE:          args->max_size_p2 = arg.u8; break;
+            case USE_SINK:          args->use_sink = true; break;
+            case PRIME_CACHE:       args->prime_cache = true; break;
             case VERSION:
                 print_version(stdout, version);
                 exit(0);
@@ -229,18 +238,22 @@ static bool parse_args(struct args *args, char const *version, char const **argv
 }
 
 static void debug_args(struct args const *args) {
-    fprintf(stderr, "%s\n", "args:");
+    fprintf(stderr, "args:\n");
     fprintf(stderr,
         "  stride_interval = %hhu\n"
         "  start_stride = %hhu\n"
         "  end_stride = %hhu\n"
         "  min_size_p2 = %hhu\n"
-        "  max_size_p2 = %hhu\n",
+        "  max_size_p2 = %hhu\n"
+        "  use_sink = %s\n"
+        "  prime_cache = %s\n",
         args->stride_interval,
         args->start_stride,
         args->end_stride,
         args->min_size_p2,
-        args->max_size_p2);
+        args->max_size_p2,
+        args->use_sink ? "true" : "false",
+        args->prime_cache ? "true" : "false");
 }
 
 #define MAX_POWER 32
@@ -274,27 +287,46 @@ static uint64_t now() {
     return ts.tv_sec * ONE_SEC_NS + ts.tv_nsec;
 }
 
-static void read_data(volatile int32_t *data, unsigned n, unsigned stride) {
-    for (unsigned i = 0; i < n; i += stride) data[i];
+static void read_data(volatile uint64_t *data, unsigned n, unsigned stride) {
+    for (uint64_t i = 0; i < n; i += stride) data[i];
 }
 
 static void vread_data(va_list args) {
     // UB (argument evaluation order not defined), but I'll live with it
     read_data(
-        va_arg(args, int32_t *),
+        va_arg(args, uint64_t *),
+        va_arg(args, unsigned),
+        va_arg(args, unsigned));
+}
+
+static void read_data_sink(volatile uint64_t *data, unsigned n, unsigned stride) {
+    // according to some sources, all of the below loads won't have "retired" unless
+    // I couple them with a write of the loaded value, and so we'll just increment "sink"
+    volatile uint64_t sink = 0;
+    uint64_t res = 0;
+    for (uint64_t i = 0; i < n; i += stride) res += data[i];
+    sink = res;
+}
+
+static void vread_data_sink(va_list args) {
+    // UB (argument evaluation order not defined), but I'll live with it
+    read_data_sink(
+        va_arg(args, uint64_t *),
         va_arg(args, unsigned),
         va_arg(args, unsigned));
 }
 
 static void debug_bench_params(struct bench_params const *p) {
-    fprintf(stderr, "%s\n", "bench_params:");
+    fprintf(stderr, "bench_params:\n");
     fprintf(stderr,
+        "  use_sink = %s\n"
         "  prime_cache = %s\n"
         "  k = %u\n"
         "  max_samples = %u\n"
         "  shift_samples = %u\n"
         "  denom = %u\n"
         "  base_spread = %u\n",
+        p->use_sink ? "true" : "false",
         p->prime_cache ? "true" : "false",
         p->k,
         p->max_samples,
@@ -400,7 +432,9 @@ int main(int argc, char const *argv[]) { (void) argc;
         .start_stride = 1,
         .end_stride = 32,
         .min_size_p2 = 10, // 2^10 bytes or 1 KB
-        .max_size_p2 = 27  // 2^27 bytes or 128 MB
+        .max_size_p2 = 27,  // 2^27 bytes or 128 MB
+        .use_sink = false,
+        .prime_cache = true
     };
 
     if (!parse_args(&args, "1.0.0", argv))
@@ -412,7 +446,7 @@ int main(int argc, char const *argv[]) { (void) argc;
     if (!validate_args(&args))
         return EXIT_FAILURE;
 
-    volatile int32_t *data = malloc(1 << args.max_size_p2);
+    volatile uint64_t *data = malloc(1 << args.max_size_p2);
 
     if (!data) {
         fprintf(stderr, "data allocation failed\n");
@@ -420,7 +454,8 @@ int main(int argc, char const *argv[]) { (void) argc;
     }
 
     struct bench_params params = {
-        .prime_cache = true,
+        .prime_cache = args.prime_cache,
+        .use_sink = args.use_sink,
         .k = 3,                 // keep 3 samples
         .max_samples = 300,     // give it 200 chances to converge
         .shift_samples = 50,    // every n samples shift the minimum off (helps with convergence if early readings were fast)
@@ -434,7 +469,7 @@ int main(int argc, char const *argv[]) { (void) argc;
     for (unsigned size = 1 << args.max_size_p2; size >= 1 << args.min_size_p2; size >>= 1)
         for (unsigned stride = args.start_stride; stride <= args.end_stride; stride += args.stride_interval) {
             unsigned n = size / sizeof *data;
-            uint64_t time = bench(params, vread_data, data, n, stride);
+            uint64_t time = bench(params, params.use_sink ? vread_data_sink : vread_data, data, n, stride);
             printf("%u %u %"PRIu64"\n", size, stride, time);
         }
 

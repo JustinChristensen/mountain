@@ -6,10 +6,9 @@ EXT :=
 CFLAGS += -Wall -Wextra -g
 GHC := ghc
 
+$(MOUNTAIN):
 $(TIME_TEST):
 $(TSC):
-$(MOUNTAIN):
-
 %:: %.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
@@ -20,11 +19,15 @@ $(MOUNTAIN):
 $(ABS_TIME): absTime.hs
 	$(GHC) -o $@ $^
 
-.PHONY:
+.PHONY: all
 all: $(TIME_TEST) $(TSC) $(ABS_TIME)
+
+.PHONY: run-debug
+run-debug:
+	STDBUF1=L STDBUF2=L DEBUG=* ./$(MOUNTAIN)
 
 .PHONY: clean
 clean:
 	rm -rf *.s *.o $(TIME_TEST) $(TSC) $(MOUNTAIN) *.dSYM
-	rm -rf *.hi *.o absTime
+	rm -rf *.hi *.o absTime *.txt
 
