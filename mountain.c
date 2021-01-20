@@ -5,7 +5,6 @@
 #include <stdbool.h>
 #include <string.h>
 #include <time.h>
-#include <stdarg.h>
 
 #define MAX_FLAG 128
 
@@ -287,33 +286,24 @@ static uint64_t now() {
     return ts.tv_sec * ONE_SEC_NS + ts.tv_nsec;
 }
 
-static void read_data(volatile uint64_t *data, unsigned n, unsigned stride) {
-    for (uint64_t i = 0; i < n; i += stride) data[i];
+struct read_data_args {
+    volatile uint64_t *data;
+    unsigned n, stride;
+};
+
+static void read_data(void *args) {
+    struct read_data_args const *a = args;
+    for (uint64_t i = 0; i < a->n; i += a->stride) a->data[i];
 }
 
-static void vread_data(va_list args) {
-    // UB (argument evaluation order not defined), but I'll live with it
-    read_data(
-        va_arg(args, uint64_t *),
-        va_arg(args, unsigned),
-        va_arg(args, unsigned));
-}
-
-static void read_data_sink(volatile uint64_t *data, unsigned n, unsigned stride) {
+static void read_data_sink(void *args) {
+    struct read_data_args const *a = args;
     // according to some sources, all of the below loads won't have "retired" unless
     // I couple them with a write of the loaded value, and so we'll just increment "sink"
     volatile uint64_t sink = 0;
     uint64_t res = 0;
-    for (uint64_t i = 0; i < n; i += stride) res += data[i];
+    for (uint64_t i = 0; i < a->n; i += a->stride) res += a->data[i];
     sink = res;
-}
-
-static void vread_data_sink(va_list args) {
-    // UB (argument evaluation order not defined), but I'll live with it
-    read_data_sink(
-        va_arg(args, uint64_t *),
-        va_arg(args, unsigned),
-        va_arg(args, unsigned));
 }
 
 static void debug_bench_params(struct bench_params const *p) {
@@ -394,31 +384,17 @@ static void try_shift(uint64_t *samples, unsigned s, struct bench_params const p
     }
 }
 
-static uint64_t bench(struct bench_params const p, void (*fn)(va_list args), ...) {
-    va_list args;
+static uint64_t bench(struct bench_params const p, void (*fn)(void *args), void *args) {
     uint64_t *samples = calloc(p.k, sizeof *samples);
     unsigned s = 0;
 
-    // va_start(args, fn);
-    // volatile uint64_t *data = va_arg(args, uint64_t *);
-    // unsigned n = va_arg(args, unsigned);
-    // unsigned stride = va_arg(args, unsigned);
-    // va_end(args);
-
-    if (p.prime_cache) {
-        va_start(args, fn);
+    if (p.prime_cache)
         (*fn)(args);
-        va_end(args);
-        // read_data(data, n, stride);
-    }
 
     do {
-        va_start(args, fn);
         uint64_t start = now();
         (*fn)(args);
-        // read_data(data, n, stride);
         uint64_t elapsed = now() - start;
-        va_end(args);
 
         if (p.shift_samples) try_shift(samples, s, p);
         sort_samples(samples, add_sample(samples, s++, elapsed, p));
@@ -475,8 +451,8 @@ int main(int argc, char const *argv[]) { (void) argc;
 
     for (unsigned size = 1 << args.max_size_p2; size >= 1 << args.min_size_p2; size >>= 1) {
         for (unsigned stride = args.start_stride; stride <= args.end_stride; stride += args.stride_interval) {
-            unsigned n = size / sizeof *data;
-            uint64_t time = bench(params, params.use_sink ? vread_data_sink : vread_data, data, n, stride);
+            struct read_data_args fargs = { data, size / sizeof *data, stride };
+            uint64_t time = bench(params, params.use_sink ? read_data_sink : read_data, &fargs);
             printf("%u %u %"PRIu64"\n", stride, size, time);
         }
 
