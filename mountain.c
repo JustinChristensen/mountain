@@ -396,20 +396,27 @@ static void try_shift(uint64_t *samples, unsigned s, struct bench_params const p
 
 static uint64_t bench(struct bench_params const p, void (*fn)(va_list args), ...) {
     va_list args;
-
     uint64_t *samples = calloc(p.k, sizeof *samples);
     unsigned s = 0;
+
+    // va_start(args, fn);
+    // volatile uint64_t *data = va_arg(args, uint64_t *);
+    // unsigned n = va_arg(args, unsigned);
+    // unsigned stride = va_arg(args, unsigned);
+    // va_end(args);
 
     if (p.prime_cache) {
         va_start(args, fn);
         (*fn)(args);
         va_end(args);
+        // read_data(data, n, stride);
     }
 
     do {
         va_start(args, fn);
         uint64_t start = now();
         (*fn)(args);
+        // read_data(data, n, stride);
         uint64_t elapsed = now() - start;
         va_end(args);
 
@@ -466,12 +473,15 @@ int main(int argc, char const *argv[]) { (void) argc;
     if (debug("bench_params"))
         debug_bench_params(&params);
 
-    for (unsigned size = 1 << args.max_size_p2; size >= 1 << args.min_size_p2; size >>= 1)
+    for (unsigned size = 1 << args.max_size_p2; size >= 1 << args.min_size_p2; size >>= 1) {
         for (unsigned stride = args.start_stride; stride <= args.end_stride; stride += args.stride_interval) {
             unsigned n = size / sizeof *data;
             uint64_t time = bench(params, params.use_sink ? vread_data_sink : vread_data, data, n, stride);
-            printf("%u %u %"PRIu64"\n", size, stride, time);
+            printf("%u %u %"PRIu64"\n", stride, size, time);
         }
+
+        printf("\n");
+    }
 
     free((void *) data);
 
