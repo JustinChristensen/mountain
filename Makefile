@@ -2,8 +2,8 @@ TIME_TEST := time_test
 TSC := tsc
 ABS_TIME := absTime
 MOUNTAIN := mountain
-EXT :=
-CFLAGS += -Wall -Wextra -g
+GNUPLOT := gnuplot
+CFLAGS += -Wall -Wextra -g -O3
 GHC := ghc
 
 $(MOUNTAIN):
@@ -19,6 +19,12 @@ $(TSC):
 $(ABS_TIME): absTime.hs
 	$(GHC) -o $@ $^
 
+run.txt: $(MOUNTAIN)
+	./$(MOUNTAIN) --use-sink > $@
+
+mountain.png: run.txt
+	$(GNUPLOT) splot.gnu > $@
+
 .PHONY: all
 all: $(TIME_TEST) $(TSC) $(ABS_TIME)
 
@@ -29,5 +35,5 @@ run-debug:
 .PHONY: clean
 clean:
 	rm -rf *.s *.o $(TIME_TEST) $(TSC) $(MOUNTAIN) *.dSYM
-	rm -rf *.hi *.o absTime *.txt
+	rm -rf *.hi *.o absTime *.txt *.jpg *.png
 

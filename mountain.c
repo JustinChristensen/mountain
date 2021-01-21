@@ -20,6 +20,7 @@ enum arg_type {
     END_STRIDE,
     MIN_SIZE,
     MAX_SIZE,
+    SHIFT_SAMPLES,
     PRIME_CACHE,
     USE_SINK
 };
@@ -38,13 +39,15 @@ struct args {
             start_stride,    // stride=[1,n] where start < end
             end_stride,
             min_size_p2,     // size=2^n where n=[10,27] and min_size < max_size
-            max_size_p2;
+            max_size_p2,
+            shift_samples;
     bool use_sink, prime_cache;
 };
 
 struct bench_params {
     bool use_sink, prime_cache;
-    unsigned k,
+    uint8_t k;
+    unsigned
         max_samples,
         shift_samples,
         denom,
@@ -143,6 +146,7 @@ static void print_usage(FILE *handle, char const *prog) {
     fprintf(handle, optfmt, "-e, --end-stride", "Ending stride (32).");
     fprintf(handle, optfmt, "-i, --min-size", "Minimum size as a power of two (2^n where n = 10 or 1 KB).");
     fprintf(handle, optfmt, "-a, --max-size", "Maximum size as a power of two (2^n where n = 27 or 128 MB).");
+    fprintf(handle, optfmt, "--shift-samples", "The number of samples to collect before shifting off the minimum sample to remove a potential outlier (50).");
     fprintf(handle, optfmt, "--use-sink", "Accumulate the results of the loads (forcing loads to retire?).");
     fprintf(handle, optfmt, "--prime-cache", "Attempt to prime the cache before entering the test loop.");
     fprintf(handle, "\n");
@@ -171,6 +175,7 @@ static char const **parse_arg(struct arg *arg, char const **argv) {
     || _parse_arg("end-stride", 'e', END_STRIDE, uint8_val, arg, &argv)
     || _parse_arg("min-size", 'i', MIN_SIZE, uint8_val, arg, &argv)
     || _parse_arg("max-size", 'a', MAX_SIZE, uint8_val, arg, &argv)
+    || _parse_arg("shift-samples", 0, SHIFT_SAMPLES, uint8_val, arg, &argv)
     || _parse_arg("prime-cache", 0, PRIME_CACHE, NULL, arg, &argv)
     || _parse_arg("use-sink", 0, USE_SINK, NULL, arg, &argv)
     ;
@@ -201,6 +206,7 @@ static bool parse_args(struct args *args, char const *version, char const **argv
             case END_STRIDE:        args->end_stride = arg.u8; break;
             case MIN_SIZE:          args->min_size_p2 = arg.u8; break;
             case MAX_SIZE:          args->max_size_p2 = arg.u8; break;
+            case SHIFT_SAMPLES:     args->shift_samples = arg.u8; break;
             case USE_SINK:          args->use_sink = true; break;
             case PRIME_CACHE:       args->prime_cache = true; break;
             case VERSION:
@@ -244,6 +250,7 @@ static void debug_args(struct args const *args) {
         "  end_stride = %hhu\n"
         "  min_size_p2 = %hhu\n"
         "  max_size_p2 = %hhu\n"
+        "  shift_samples = %hhu\n"
         "  use_sink = %s\n"
         "  prime_cache = %s\n",
         args->stride_interval,
@@ -251,6 +258,7 @@ static void debug_args(struct args const *args) {
         args->end_stride,
         args->min_size_p2,
         args->max_size_p2,
+        args->shift_samples,
         args->use_sink ? "true" : "false",
         args->prime_cache ? "true" : "false");
 }
@@ -385,7 +393,7 @@ static void try_shift(uint64_t *samples, unsigned s, struct bench_params const p
 }
 
 static uint64_t bench(struct bench_params const p, void (*fn)(void *args), void *args) {
-    uint64_t *samples = calloc(p.k, sizeof *samples);
+    uint64_t samples[p.k];
     unsigned s = 0;
 
     if (p.prime_cache)
@@ -400,13 +408,10 @@ static uint64_t bench(struct bench_params const p, void (*fn)(void *args), void 
         sort_samples(samples, add_sample(samples, s++, elapsed, p));
     } while (!has_converged(samples, s, p) && s < p.max_samples);
 
-    uint64_t result = samples[0];
-    free(samples);
-
     if (debug("collection"))
-        fprintf(stderr, "collected %d samples, result: %"PRIu64"\n", s, result);
+        fprintf(stderr, "collected %d samples, result: %"PRIu64"\n", s, samples[0]);
 
-    return result;
+    return samples[0];
 }
 
 int main(int argc, char const *argv[]) { (void) argc;
@@ -416,6 +421,7 @@ int main(int argc, char const *argv[]) { (void) argc;
         .end_stride = 32,
         .min_size_p2 = 10, // 2^10 bytes or 1 KB
         .max_size_p2 = 27,  // 2^27 bytes or 128 MB
+        .shift_samples = 50,
         .use_sink = false,
         .prime_cache = true
     };
@@ -437,13 +443,13 @@ int main(int argc, char const *argv[]) { (void) argc;
     }
 
     struct bench_params params = {
-        .prime_cache = args.prime_cache,
-        .use_sink = args.use_sink,
-        .k = 3,                 // keep 3 samples
-        .max_samples = 300,     // give it 200 chances to converge
-        .shift_samples = 50,    // every n samples shift the minimum off (helps with convergence if early readings were fast)
-        .denom = 100,           // spread = min_value / denom + base_spread
-        .base_spread = 2        // at least 3 nanoseconds
+        .prime_cache = args.prime_cache,        // run the test before entering the timing loop to try and prime the cache
+        .use_sink = args.use_sink,              // attempt to "retire" loads by adding them to a "sink" accumulator
+        .k = 3,                                 // keep 3 samples
+        .max_samples = 300,                     // give it 200 chances to converge
+        .shift_samples = args.shift_samples,    // every n samples shift the minimum off (helps with convergence if early readings were fast)
+        .denom = 100,                           // spread = min_value / denom + base_spread
+        .base_spread = 2                        // at least 3 nanoseconds
     };
 
     if (debug("bench_params"))
