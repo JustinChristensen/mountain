@@ -5,7 +5,8 @@
 
 set term svg \
     size 1800, 1200 dynamic \
-    font "Verdana"
+    font "Verdana" \
+    background "white"
 
 set view 55, 69, 0.9
 set grid vertical
