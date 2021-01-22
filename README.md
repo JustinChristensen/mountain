@@ -2,7 +2,7 @@
 
 An implementation of a memory mountain benchmark, as described by Computer Systems: A Programmer's Perspective.
 
-![Memory Mountain](./mountain.png)
+![Memory Mountain](./mountain.svg)
 
 ## Building
 

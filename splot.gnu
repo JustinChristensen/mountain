@@ -3,9 +3,9 @@
 #     title "Memory Mountain" \
 #     font "Verdana"
 
-set term pngcairo \
-    font "Verdana" \
-    size 1800, 1200
+set term svg \
+    size 1800, 1200 dynamic \
+    font "Verdana"
 
 set view 55, 69, 0.9
 set grid vertical
@@ -14,7 +14,7 @@ set log y 2
 
 set xyplane relative 0.005
 
-set key spacing 3 font ",12"
+set key spacing 2 font ",12"
 set title "throughput (MB/s) for reads of size / stride bytes" \
     font ",16" offset 0,-2
 
@@ -34,18 +34,15 @@ cache_by_color(size) =  size <= (1 << 15) ? 0xf7d367 : \
                         size <= (1 << 23) ? 0x0000ff : \
                                            0x0
 
-if (!exists("datafile")) \
-    datafile='run.txt'
-
-
 set pm3d nolighting border lw 2 lc rgb "gray" solid
 unset colorbox
 
+if (!exists("datafile")) datafile='run.txt'
 splot datafile \
     using 1:2:(MB_per_sec($1, $2, $3)):(cache_by_color($2)) \
     notitle \
     with pm3d lc rgb variable, \
-    keyentry with lines lc rgb 0xf7d367 lw 3 title "L1 (32K)  ", \
-    keyentry with lines lc rgb 0xff0000 lw 3 title "L2 (256K)  ", \
-    keyentry with lines lc rgb 0x0000ff lw 3 title "L3 (8M)  ", \
-    keyentry with lines lc rgb 0x0 lw 3 title "Main Memory  "
+    keyentry with lines lc rgb 0xf7d367 lw 5 title "L1 (32K)  ", \
+    keyentry with lines lc rgb 0xff0000 lw 5 title "L2 (256K)  ", \
+    keyentry with lines lc rgb 0x0000ff lw 5 title "L3 (8M)  ", \
+    keyentry with lines lc rgb 0x0 lw 4 title "Main Memory  "
