@@ -22,6 +22,7 @@ $(ABS_TIME): absTime.hs
 run.txt: $(MOUNTAIN)
 	./$(MOUNTAIN) --use-sink > $@
 
+.PHONY: mountain.png
 mountain.png: run.txt
 	$(GNUPLOT) splot.gnu > $@
 
