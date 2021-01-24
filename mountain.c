@@ -313,6 +313,12 @@ static uint64_t now() {
     return ts.tv_sec * ONE_SEC_NS + ts.tv_nsec;
 }
 
+// static uint64_t rdtsc() {
+//     uint64_t tsc, lo;
+//     asm volatile ("lfence\n\trdtsc\n\tlfence" : "=a" (lo), "=d" (tsc));
+//     return (tsc << 32) | lo;
+// }
+
 static void debug_bench_params(struct bench_params const *p) {
     fprintf(stderr, "bench_params:\n");
     fprintf(stderr,
@@ -389,6 +395,13 @@ static void try_shift(uint64_t *samples, unsigned s, struct bench_params const p
     }
 }
 
+// hardcoded for my specific machine according to values from CPUID
+// skylake doesn't correctly report the core crystal clock frequency for some reason
+// (2900 * 1000 * 2 / 242) * (242 / 2)
+// static uint64_t cycles_to_ns(uint64_t cycles) {
+//     return cycles * 10 / 29;            // 2.9 cycles per nanosecond
+// }
+
 static uint64_t bench(struct bench_params const p, void (*fn)(void *args), void *args) {
     uint64_t samples[p.k];
     unsigned s = 0;
@@ -398,8 +411,10 @@ static uint64_t bench(struct bench_params const p, void (*fn)(void *args), void 
 
     do {
         uint64_t start = now();
+        // uint64_t start = rdtsc();
         (*fn)(args);
         uint64_t elapsed = now() - start;
+        // uint64_t elapsed = cycles_to_ns(rdtsc() - start);
 
         if (p.shift_samples) try_shift(samples, s, p);
         sort_samples(samples, add_sample(samples, s++, elapsed, p));
