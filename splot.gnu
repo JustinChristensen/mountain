@@ -1,12 +1,12 @@
-# set term qt \
-#     size 1400, 800 \
-#     title "Memory Mountain" \
-#     font "Verdana"
+set term qt \
+    size 1400, 800 \
+    title "Memory Mountain" \
+    font "Verdana"
 
-set term svg \
-    size 1800, 1200 dynamic \
-    font "Verdana" \
-    background "white"
+# set term svg \
+#     size 1800, 1200 dynamic \
+#     font "Verdana" \
+#     background "white"
 
 set view 55, 69, 0.9
 set grid vertical
@@ -27,7 +27,8 @@ set ytics 2 logscale offset 0, -1
 set format y '%3.0b%B'
 
 set zlabel "throughput (MB/s)" offset -12, 0 font ",12" noenhanced
-set ztics 2500
+# set ztics 2500
+set ztics 10000
 
 MB_per_sec(stride, size, time) = (size / stride) / (time / 1000)
 cache_by_color(size) =  size <= (1 << 15) ? 0xf7d367 : \

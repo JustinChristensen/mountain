@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <time.h>
+#include <x86intrin.h>
 
 #define MAX_FLAG 128
 
@@ -22,7 +23,14 @@ enum arg_type {
     MAX_SIZE,
     SHIFT_SAMPLES,
     PRIME_CACHE,
-    USE_SINK
+    BENCHMARK
+};
+
+enum benchmark {
+    UINT64,
+    UINT64_SINK,
+    AVX2,
+    AVX2_SINK
 };
 
 struct arg {
@@ -31,6 +39,7 @@ struct arg {
     union {
         uint8_t u8;
         char *s;
+        enum benchmark b;
     };
 };
 
@@ -42,6 +51,7 @@ struct args {
             max_size_p2,
             shift_samples;
     bool use_sink, prime_cache;
+    enum benchmark benchmark;
 };
 
 struct bench_params {
@@ -76,6 +86,17 @@ static void uint8_val(char const *s, struct arg *arg) {
     }
 
     arg->u8 = (uint8_t) n;
+}
+
+static void benchmark_val(char const *s, struct arg *arg) {
+    if (!strcmp(s, "uint64"))           arg->b = UINT64;
+    else if (!strcmp(s, "uint64_sink")) arg->b = UINT64_SINK;
+    else if (!strcmp(s, "avx2"))        arg->b = AVX2;
+    else if (!strcmp(s, "avx2_sink"))   arg->b = AVX2_SINK;
+    else {
+        arg->type = INVALID_VAL;
+        fprintf(stderr, "%s is not a known benchmark\n", s);
+    }
 }
 
 static void setflag(char *flag, char const *s, char const *e) {
@@ -141,13 +162,13 @@ static void print_usage(FILE *handle, char const *prog) {
     fprintf(handle, "usage: %s [options]\n\n", prog);
     fprintf(handle, "Generate a memory mountain\n\n");
     fprintf(handle, "options:\n");
+    fprintf(handle, optfmt, "-b", "Benchmark: uint64 (default), uint64_sink, avx2, avx2_sink");
     fprintf(handle, optfmt, "-n, --stride-interval", "Interval to increase the stride by (+= 2).");
     fprintf(handle, optfmt, "-s, --start-stride", "Starting stride (1).");
     fprintf(handle, optfmt, "-e, --end-stride", "Ending stride (32).");
     fprintf(handle, optfmt, "-i, --min-size", "Minimum size as a power of two (2^n where n = 10 or 1 KB).");
     fprintf(handle, optfmt, "-a, --max-size", "Maximum size as a power of two (2^n where n = 27 or 128 MB).");
-    fprintf(handle, optfmt, "--shift-samples", "The number of samples to collect before shifting off the minimum sample to remove a potential outlier (50).");
-    fprintf(handle, optfmt, "--use-sink", "Accumulate the results of the loads (forcing loads to retire?).");
+    fprintf(handle, optfmt, "--shift-samples", "Shift off the minimum sample after N samples (50).");
     fprintf(handle, optfmt, "--prime-cache", "Attempt to prime the cache before entering the test loop.");
     fprintf(handle, "\n");
 }
@@ -170,6 +191,7 @@ static char const **parse_arg(struct arg *arg, char const **argv) {
     bool found_arg =
        _parse_arg("help", 'h', HELP, NULL, arg, &argv)
     || _parse_arg("version", 'v', VERSION, NULL, arg, &argv)
+    || _parse_arg(NULL, 'b', BENCHMARK, benchmark_val, arg, &argv)
     || _parse_arg("stride-interval", 'n', STRIDE_INTERVAL, uint8_val, arg, &argv)
     || _parse_arg("start-stride", 's', START_STRIDE, uint8_val, arg, &argv)
     || _parse_arg("end-stride", 'e', END_STRIDE, uint8_val, arg, &argv)
@@ -177,7 +199,6 @@ static char const **parse_arg(struct arg *arg, char const **argv) {
     || _parse_arg("max-size", 'a', MAX_SIZE, uint8_val, arg, &argv)
     || _parse_arg("shift-samples", 0, SHIFT_SAMPLES, uint8_val, arg, &argv)
     || _parse_arg("prime-cache", 0, PRIME_CACHE, NULL, arg, &argv)
-    || _parse_arg("use-sink", 0, USE_SINK, NULL, arg, &argv)
     ;
 
     // copy flag
@@ -201,13 +222,13 @@ static bool parse_args(struct args *args, char const *version, char const **argv
         argv = parse_arg(&arg, argv);
 
         switch (arg.type) {
+            case BENCHMARK:         args->benchmark = arg.b; break;
             case STRIDE_INTERVAL:   args->stride_interval = arg.u8; break;
             case START_STRIDE:      args->start_stride = arg.u8; break;
             case END_STRIDE:        args->end_stride = arg.u8; break;
             case MIN_SIZE:          args->min_size_p2 = arg.u8; break;
             case MAX_SIZE:          args->max_size_p2 = arg.u8; break;
             case SHIFT_SAMPLES:     args->shift_samples = arg.u8; break;
-            case USE_SINK:          args->use_sink = true; break;
             case PRIME_CACHE:       args->prime_cache = true; break;
             case VERSION:
                 print_version(stdout, version);
@@ -292,26 +313,6 @@ static uint64_t now() {
     }
 
     return ts.tv_sec * ONE_SEC_NS + ts.tv_nsec;
-}
-
-struct read_data_args {
-    volatile uint64_t *data;
-    unsigned n, stride;
-};
-
-static void read_data(void *args) {
-    struct read_data_args const *a = args;
-    for (uint64_t i = 0; i < a->n; i += a->stride) a->data[i];
-}
-
-static void read_data_sink(void *args) {
-    struct read_data_args const *a = args;
-    // according to some sources, all of the below loads won't have "retired" unless
-    // I couple them with a write of the loaded value, and so we'll just increment "sink"
-    volatile uint64_t sink = 0;
-    uint64_t res = 0;
-    for (uint64_t i = 0; i < a->n; i += a->stride) res += a->data[i];
-    sink = res;
 }
 
 static void debug_bench_params(struct bench_params const *p) {
@@ -414,15 +415,67 @@ static uint64_t bench(struct bench_params const p, void (*fn)(void *args), void 
     return samples[0];
 }
 
+struct read_data_args {
+    volatile void *data;
+    unsigned n, stride;
+};
+
+#define define_read_data(name, T)                                       \
+static void name##_read_data(void *args) {                              \
+    struct read_data_args const *a = args;                              \
+    volatile T *data = a->data;                                         \
+    for (unsigned i = 0; i < a->n; i += a->stride) data[i];             \
+    _mm_mfence();                                                       \
+}                                                                       \
+                                                                        \
+static void name##_read_data_sink(void *args) {                         \
+    struct read_data_args const *a = args;                              \
+    volatile T *data = a->data;                                         \
+    volatile T sink = { 0 };                                            \
+    T res = { 0 };                                                      \
+    for (unsigned i = 0; i < a->n; i += a->stride) res += data[i];      \
+    sink = res;                                                         \
+}
+
+define_read_data(uint64, uint64_t)
+define_read_data(avx2, __m256i)
+
+static void (*benchmarks[])(void *args) = {
+    [UINT64] = uint64_read_data,
+    [UINT64_SINK] = uint64_read_data_sink,
+    [AVX2] = avx2_read_data,
+    [AVX2_SINK] = avx2_read_data_sink
+};
+
+static size_t element_size(enum benchmark b) {
+    switch (b) {
+        case UINT64:
+        case UINT64_SINK:
+            return sizeof (uint64_t);
+        case AVX2:
+        case AVX2_SINK:
+            return sizeof (__m256i);
+    }
+}
+
+static char *benchmark_str(enum benchmark b) {
+    switch (b) {
+        case UINT64:      return "uint64";
+        case UINT64_SINK: return "uint64_sink";
+        case AVX2:        return "avx2";
+        case AVX2_SINK:   return "avx2_sink";
+    }
+}
+
 int main(int argc, char const *argv[]) { (void) argc;
     struct args args = {
+        .benchmark = UINT64,
         .stride_interval = 2,
         .start_stride = 1,
         .end_stride = 32,
         .min_size_p2 = 10, // 2^10 bytes or 1 KB
         .max_size_p2 = 27,  // 2^27 bytes or 128 MB
         .shift_samples = 50,
-        .use_sink = false,
         .prime_cache = true
     };
 
@@ -435,30 +488,31 @@ int main(int argc, char const *argv[]) { (void) argc;
     if (!validate_args(&args))
         return EXIT_FAILURE;
 
-    volatile uint64_t *data = malloc(1 << args.max_size_p2);
-
-    if (!data) {
-        fprintf(stderr, "data allocation failed\n");
-        return EXIT_FAILURE;
-    }
-
     struct bench_params params = {
         .prime_cache = args.prime_cache,        // run the test before entering the timing loop to try and prime the cache
-        .use_sink = args.use_sink,              // attempt to "retire" loads by adding them to a "sink" accumulator
-        .k = 3,                                 // keep 3 samples
-        .max_samples = 300,                     // give it 200 chances to converge
+        .k = 3,                                 // require 3 samples
+        .max_samples = 300,                     // give it 300 chances to converge
         .shift_samples = args.shift_samples,    // every n samples shift the minimum off (helps with convergence if early readings were fast)
         .denom = 100,                           // spread = min_value / denom + base_spread
-        .base_spread = 2                        // at least 3 nanoseconds
+        .base_spread = 2                        // at least 2 nanoseconds
     };
 
     if (debug("bench_params"))
         debug_bench_params(&params);
 
+    if (debug("benchmark"))
+        fprintf(stderr, "running benchmark: %s\n", benchmark_str(args.benchmark));
+
+    volatile void *data = malloc(1 << args.max_size_p2);
+    if (!data) {
+        fprintf(stderr, "data allocation failed\n");
+        return EXIT_FAILURE;
+    }
+
     for (unsigned size = 1 << args.max_size_p2; size >= 1 << args.min_size_p2; size >>= 1) {
         for (unsigned stride = args.start_stride; stride <= args.end_stride; stride += args.stride_interval) {
-            struct read_data_args fargs = { data, size / sizeof *data, stride };
-            uint64_t time = bench(params, params.use_sink ? read_data_sink : read_data, &fargs);
+            struct read_data_args fargs = { data, size / element_size(args.benchmark), stride };
+            uint64_t time = bench(params, benchmarks[args.benchmark], &fargs);
             printf("%u %u %"PRIu64"\n", stride, size, time);
         }
 

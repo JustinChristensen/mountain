@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <inttypes.h>
 #include <mach/mach_time.h>
+#include <x86intrin.h>
 
 #define LOOP_END ((1 << 30) >> 1)
 #define ONE_SEC_NS 1000000000
@@ -102,6 +103,11 @@ static int report_res() {
 }
 
 int main() {
+    __m256i const vec = { 99, 30000, 6400000, 9191919191 };
+    volatile __m256i vec2 = _mm256_load_si256(&vec);
+
+    (void) vec2;
+
     return
         clock_sleep_test() ||
         clock_loop_test() ||

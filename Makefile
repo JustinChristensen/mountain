@@ -6,9 +6,12 @@ GNUPLOT := gnuplot
 CFLAGS += -Wall -Wextra -g -O3
 GHC := ghc
 
+$(MOUNTAIN): CFLAGS += -mavx2
 $(MOUNTAIN):
+$(TIME_TEST): CFLAGS += -mavx2
 $(TIME_TEST):
 $(TSC):
+
 %:: %.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
