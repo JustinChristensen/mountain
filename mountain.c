@@ -50,12 +50,12 @@ struct args {
             min_size_p2,     // size=2^n where n=[10,27] and min_size < max_size
             max_size_p2,
             shift_samples;
-    bool use_sink, prime_cache;
+    bool prime_cache;
     enum benchmark benchmark;
 };
 
 struct bench_params {
-    bool use_sink, prime_cache;
+    bool prime_cache;
     uint8_t k;
     unsigned
         max_samples,
@@ -272,7 +272,6 @@ static void debug_args(struct args const *args) {
         "  min_size_p2 = %hhu\n"
         "  max_size_p2 = %hhu\n"
         "  shift_samples = %hhu\n"
-        "  use_sink = %s\n"
         "  prime_cache = %s\n",
         args->stride_interval,
         args->start_stride,
@@ -280,7 +279,6 @@ static void debug_args(struct args const *args) {
         args->min_size_p2,
         args->max_size_p2,
         args->shift_samples,
-        args->use_sink ? "true" : "false",
         args->prime_cache ? "true" : "false");
 }
 
@@ -318,14 +316,12 @@ static uint64_t now() {
 static void debug_bench_params(struct bench_params const *p) {
     fprintf(stderr, "bench_params:\n");
     fprintf(stderr,
-        "  use_sink = %s\n"
         "  prime_cache = %s\n"
         "  k = %u\n"
         "  max_samples = %u\n"
         "  shift_samples = %u\n"
         "  denom = %u\n"
         "  base_spread = %u\n",
-        p->use_sink ? "true" : "false",
         p->prime_cache ? "true" : "false",
         p->k,
         p->max_samples,
@@ -424,7 +420,7 @@ struct read_data_args {
 static void name##_read_data(void *args) {                              \
     struct read_data_args const *a = args;                              \
     volatile T *data = a->data;                                         \
-    for (unsigned i = 0; i < a->n; i += a->stride) data[i];             \
+    for (uint64_t i = 0; i < a->n; i += a->stride) data[i];             \
     _mm_mfence();                                                       \
 }                                                                       \
                                                                         \
@@ -433,7 +429,7 @@ static void name##_read_data_sink(void *args) {                         \
     volatile T *data = a->data;                                         \
     volatile T sink = { 0 };                                            \
     T res = { 0 };                                                      \
-    for (unsigned i = 0; i < a->n; i += a->stride) res += data[i];      \
+    for (uint64_t i = 0; i < a->n; i += a->stride) res += data[i];      \
     sink = res;                                                         \
 }
 
@@ -441,10 +437,10 @@ define_read_data(uint64, uint64_t)
 define_read_data(avx2, __m256i)
 
 static void (*benchmarks[])(void *args) = {
-    [UINT64] = uint64_read_data,
+    [UINT64]      = uint64_read_data,
     [UINT64_SINK] = uint64_read_data_sink,
-    [AVX2] = avx2_read_data,
-    [AVX2_SINK] = avx2_read_data_sink
+    [AVX2]        = avx2_read_data,
+    [AVX2_SINK]   = avx2_read_data_sink
 };
 
 static size_t element_size(enum benchmark b) {

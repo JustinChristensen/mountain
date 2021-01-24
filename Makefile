@@ -23,7 +23,7 @@ $(ABS_TIME): absTime.hs
 	$(GHC) -o $@ $^
 
 run.txt: $(MOUNTAIN)
-	./$(MOUNTAIN) --use-sink > $@
+	./$(MOUNTAIN) -b avx2 > $@
 
 .PHONY: mountain.svg
 mountain.svg: run.txt
