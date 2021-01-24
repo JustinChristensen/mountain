@@ -413,7 +413,7 @@ static uint64_t bench(struct bench_params const p, void (*fn)(void *args), void 
 
 struct read_data_args {
     volatile void *data;
-    unsigned n, stride;
+    uint64_t n, stride;
 };
 
 #define define_read_data(name, T)                                       \
