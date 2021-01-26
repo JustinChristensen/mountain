@@ -290,10 +290,8 @@ static bool validate_args(struct args const *args) {
         success = false, fprintf(stderr, SIZE_FMT, "minimum", 1L << MAX_POWER, MAX_POWER);
     if (args->max_size_p2 > MAX_POWER)
         success = false, fprintf(stderr, SIZE_FMT, "maximum", 1L << MAX_POWER, MAX_POWER);
-    if (args->end_stride > args->start_stride) {
-        if (args->end_stride - args->start_stride < args->stride_interval)
-            success = false, fprintf(stderr, "stride interval must be less than or equal to the difference between the start and end stride\n");
-    } else success = false, fprintf(stderr, "start stride must be less than ending stride\n");
+    if (args->start_stride > args->end_stride)
+        success = false, fprintf(stderr, "start stride must be less than or equal to ending stride\n");
     if (args->min_size_p2 > args->max_size_p2)
         success = false, fprintf(stderr, "max size must be greater than or equal to min size\n");
 
@@ -436,7 +434,7 @@ static void name##_read_data(void *args) {                              \
     struct read_data_args const *a = args;                              \
     volatile T *data = a->data;                                         \
     for (uint64_t i = 0; i < a->n; i += a->stride) data[i];             \
-    _mm_mfence();                                                       \
+    _mm_lfence();                                                       \
 }                                                                       \
                                                                         \
 static void name##_read_data_sink(void *args) {                         \

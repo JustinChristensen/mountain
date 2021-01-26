@@ -39,5 +39,5 @@ run-debug:
 .PHONY: clean
 clean:
 	rm -rf *.s *.o $(TIME_TEST) $(TSC) $(MOUNTAIN) *.dSYM
-	rm -rf *.hi *.o absTime *.txt *.jpg *.png
+	rm -rf *.hi *.o absTime *.txt *.jpg *.png *.out
 
