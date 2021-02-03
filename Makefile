@@ -2,6 +2,7 @@ TIME_TEST := time_test
 TSC := tsc
 ABS_TIME := absTime
 MOUNTAIN := mountain
+STDIN := stdin
 GNUPLOT := gnuplot
 CFLAGS += -Wall -Wextra -g -O3
 GHC := ghc
@@ -11,6 +12,7 @@ $(MOUNTAIN):
 $(TIME_TEST): CFLAGS += -mavx2
 $(TIME_TEST):
 $(TSC):
+$(STDIN):
 
 %:: %.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
@@ -38,6 +40,6 @@ run-debug:
 
 .PHONY: clean
 clean:
-	rm -rf *.s *.o $(TIME_TEST) $(TSC) $(MOUNTAIN) *.dSYM
-	rm -rf *.hi *.o absTime *.txt *.jpg *.png *.out
+	rm -rf *.s *.o $(TIME_TEST) $(TSC) $(MOUNTAIN) $(STDIN) *.dSYM
+	rm -rf *.hi *.o absTime *.jpg *.png *.out
 

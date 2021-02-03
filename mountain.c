@@ -368,7 +368,7 @@ static unsigned add_sample(
     uint64_t *samples, unsigned s, uint64_t elapsed,
     struct bench_params const p
 ) {
-    unsigned i = s < p.k ? s : p.k - 1;
+    unsigned i = s < p.k ? s : p.k - 1U;
 
     if (s < p.k || elapsed < samples[i])
         samples[i] = elapsed;
@@ -380,14 +380,14 @@ static void try_shift(uint64_t *samples, unsigned s, struct bench_params const p
     if (s < p.k || s % p.shift_samples > 0) return;
 
     unsigned i = 0;
-    while (i < p.k - 1) samples[i] = samples[i + 1], i++;
+    while (i < p.k - 1U) samples[i] = samples[i + 1], i++;
     samples[p.k - 1] = UINT64_MAX;  // add_sample will replace this
 
     i = 0;
     if (debug("shifts")) {
         fprintf(stderr, "shifted: [");
         fprintf(stderr, "%"PRIu64"", samples[i++]);
-        while (i <= p.k - 1)
+        while (i <= p.k - 1U)
             fprintf(stderr, ", %"PRIu64"", samples[i++]);
         fprintf(stderr, "]\n");
     }
@@ -460,6 +460,7 @@ static size_t element_size(enum benchmark b) {
     switch (b) {
         case UINT64:
         case UINT64_SINK:
+        default:
             return sizeof (uint64_t);
         case AVX2:
         case AVX2_SINK:
@@ -469,6 +470,7 @@ static size_t element_size(enum benchmark b) {
 
 static char *benchmark_str(enum benchmark b) {
     switch (b) {
+        default:
         case UINT64:      return "uint64";
         case UINT64_SINK: return "uint64_sink";
         case AVX2:        return "avx2";
@@ -518,7 +520,7 @@ int main(int argc, char const *argv[]) { (void) argc;
         return EXIT_FAILURE;
     }
 
-    for (unsigned size = 1 << args.max_size_p2; size >= 1 << args.min_size_p2; size >>= 1) {
+    for (unsigned size = 1 << args.max_size_p2; size >= 1U << args.min_size_p2; size >>= 1) {
         for (unsigned stride = args.start_stride; stride <= args.end_stride; stride += args.stride_interval) {
             struct read_data_args fargs = { data, size / element_size(args.benchmark), stride };
             uint64_t time = bench(params, benchmarks[args.benchmark], &fargs);
