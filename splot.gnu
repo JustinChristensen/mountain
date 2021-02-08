@@ -30,7 +30,7 @@ set zlabel "throughput (MB/s)" offset -12, 0 font ",12" noenhanced
 # set ztics 2500
 # set ztics 10000
 
-MB_per_sec(stride, size, time) = (size / stride) / (time / 1000)
+MB_per_sec(stride, size, time) = size * 1000 / (stride * time)
 cache_by_color(size) =  size <= (1 << 15) ? 0xf7d367 : \
                         size <= (1 << 18) ? 0xff0000 : \
                         size <= (1 << 23) ? 0x0000ff : \

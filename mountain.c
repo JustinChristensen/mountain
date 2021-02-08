@@ -6,6 +6,7 @@
 #include <string.h>
 #include <time.h>
 #include <x86intrin.h>
+#include <cpuid.h>
 
 #define MAX_FLAG 128
 
@@ -23,6 +24,7 @@ enum arg_type {
     MAX_SIZE,
     SHIFT_SAMPLES,
     PRIME_CACHE,
+    USE_RDTSC,
     BENCHMARK
 };
 
@@ -50,12 +52,12 @@ struct args {
             min_size_p2,     // size=2^n where n=[10,27] and min_size < max_size
             max_size_p2,
             shift_samples;
-    bool prime_cache;
+    bool prime_cache, use_rdtsc;
     enum benchmark benchmark;
 };
 
 struct bench_params {
-    bool prime_cache;
+    bool prime_cache, use_rdtsc;
     uint8_t k;
     unsigned
         max_samples,
@@ -170,6 +172,7 @@ static void print_usage(FILE *handle, char const *prog) {
     fprintf(handle, optfmt, "-a, --max-size", "Maximum size as a power of two (2^n where n = 27 or 128 MB).");
     fprintf(handle, optfmt, "--shift-samples", "Shift off the minimum sample after N samples (50).");
     fprintf(handle, optfmt, "--prime-cache", "Attempt to prime the cache before entering the test loop.");
+    fprintf(handle, optfmt, "-t", "Use rdtsc for tracking time.");
     fprintf(handle, "\n");
 }
 
@@ -199,6 +202,7 @@ static char const **parse_arg(struct arg *arg, char const **argv) {
     || _parse_arg("max-size", 'a', MAX_SIZE, uint8_val, arg, &argv)
     || _parse_arg("shift-samples", 0, SHIFT_SAMPLES, uint8_val, arg, &argv)
     || _parse_arg("prime-cache", 0, PRIME_CACHE, NULL, arg, &argv)
+    || _parse_arg(NULL, 't', USE_RDTSC, NULL, arg, &argv)
     ;
 
     // copy flag
@@ -230,6 +234,7 @@ static bool parse_args(struct args *args, char const *version, char const **argv
             case MAX_SIZE:          args->max_size_p2 = arg.u8; break;
             case SHIFT_SAMPLES:     args->shift_samples = arg.u8; break;
             case PRIME_CACHE:       args->prime_cache = true; break;
+            case USE_RDTSC:         args->use_rdtsc = true; break;
             case VERSION:
                 print_version(stdout, version);
                 exit(0);
@@ -272,14 +277,16 @@ static void debug_args(struct args const *args) {
         "  min_size_p2 = %hhu\n"
         "  max_size_p2 = %hhu\n"
         "  shift_samples = %hhu\n"
-        "  prime_cache = %s\n",
+        "  prime_cache = %s\n"
+        "  use_rdtsc = %s\n",
         args->stride_interval,
         args->start_stride,
         args->end_stride,
         args->min_size_p2,
         args->max_size_p2,
         args->shift_samples,
-        args->prime_cache ? "true" : "false");
+        args->prime_cache ? "true" : "false",
+        args->use_rdtsc ? "true" : "false");
 }
 
 #define MAX_POWER 32
@@ -298,8 +305,16 @@ static bool validate_args(struct args const *args) {
     return success;
 }
 
+static uint64_t rdtsc() {
+    uint64_t tsc, lo;
+    asm volatile ("lfence\n\trdtsc\n\tlfence" : "=a" (lo), "=d" (tsc));
+    return (tsc << 32) | lo;
+}
+
 #define ONE_SEC_NS 1000000000
-static uint64_t now() {
+static uint64_t now(bool use_rdtsc) {
+    if (use_rdtsc) return rdtsc();
+
     struct timespec ts;
 
     // CLOCK_MONOTONIC on OSX only supports microsecond precision, and each nanosecond counts
@@ -311,12 +326,6 @@ static uint64_t now() {
     return ts.tv_sec * ONE_SEC_NS + ts.tv_nsec;
 }
 
-// static uint64_t rdtsc() {
-//     uint64_t tsc, lo;
-//     asm volatile ("lfence\n\trdtsc\n\tlfence" : "=a" (lo), "=d" (tsc));
-//     return (tsc << 32) | lo;
-// }
-
 static void debug_bench_params(struct bench_params const *p) {
     fprintf(stderr, "bench_params:\n");
     fprintf(stderr,
@@ -325,13 +334,15 @@ static void debug_bench_params(struct bench_params const *p) {
         "  max_samples = %u\n"
         "  shift_samples = %u\n"
         "  denom = %u\n"
-        "  base_spread = %u\n",
+        "  base_spread = %u\n"
+        "  use_rdtsc = %s\n",
         p->prime_cache ? "true" : "false",
         p->k,
         p->max_samples,
         p->shift_samples,
         p->denom,
-        p->base_spread);
+        p->base_spread,
+        p->use_rdtsc ? "true" : "false");
 }
 
 static bool has_converged(uint64_t *samples, unsigned s, struct bench_params const p) {
@@ -393,12 +404,29 @@ static void try_shift(uint64_t *samples, unsigned s, struct bench_params const p
     }
 }
 
-// hardcoded for my specific machine according to values from CPUID
-// skylake doesn't correctly report the core crystal clock frequency for some reason
-// (2900 * 1000 * 2 / 242) * (242 / 2)
-// static uint64_t cycles_to_ns(uint64_t cycles) {
-//     return cycles * 10 / 29;            // 2.9 cycles per nanosecond
-// }
+// rdtsc ticks at a constant rate, regardless of actual CPU frequency
+// and so it can be converted to nanoseconds by using cpuid to get the CPU's base frequency
+#define PROC_FREQ_LEAF 0x16
+static uint64_t cycles_to_ns(uint64_t cycles) {
+    static unsigned freq = 0;
+
+    if (!freq) {
+        unsigned b, c, d;
+        __get_cpuid(PROC_FREQ_LEAF, &freq, &b, &c, &d);
+
+        freq = freq / 100; // mhz to ghz * 10
+
+        if (!freq) {
+            fprintf(stderr, "could not determine processor base frequency, check leaf 0x16\n");
+            abort();
+        }
+
+        if (debug("rdstc"))
+            fprintf(stderr, "processor base frequency (ghz * 10): %u\n", freq);
+    }
+
+    return cycles * 10 / freq;            // 2.9 cycles per nanosecond
+}
 
 static uint64_t bench(struct bench_params const p, void (*fn)(void *args), void *args) {
     uint64_t samples[p.k];
@@ -408,11 +436,11 @@ static uint64_t bench(struct bench_params const p, void (*fn)(void *args), void 
         (*fn)(args);
 
     do {
-        uint64_t start = now();
-        // uint64_t start = rdtsc();
+        bool uts = p.use_rdtsc;
+        uint64_t start = now(uts);
         (*fn)(args);
-        uint64_t elapsed = now() - start;
-        // uint64_t elapsed = cycles_to_ns(rdtsc() - start);
+        uint64_t elapsed = now(uts) - start;
+        if (uts) elapsed = cycles_to_ns(elapsed);
 
         if (p.shift_samples) try_shift(samples, s, p);
         sort_samples(samples, add_sample(samples, s++, elapsed, p));
@@ -486,8 +514,9 @@ int main(int argc, char const *argv[]) { (void) argc;
         .end_stride = 32,
         .min_size_p2 = 10, // 2^10 bytes or 1 KB
         .max_size_p2 = 27,  // 2^27 bytes or 128 MB
-        .shift_samples = 50,
-        .prime_cache = true
+        .shift_samples = 60,
+        .prime_cache = true,
+        .use_rdtsc = false
     };
 
     if (!parse_args(&args, "1.0.0", argv))
@@ -501,11 +530,12 @@ int main(int argc, char const *argv[]) { (void) argc;
 
     struct bench_params params = {
         .prime_cache = args.prime_cache,        // run the test before entering the timing loop to try and prime the cache
-        .k = 3,                                 // require 3 samples
+        .k = 5,                                 // require k samples
         .max_samples = 300,                     // give it 300 chances to converge
         .shift_samples = args.shift_samples,    // every n samples shift the minimum off (helps with convergence if early readings were fast)
         .denom = 100,                           // spread = min_value / denom + base_spread
-        .base_spread = 2                        // at least 2 nanoseconds
+        .base_spread = 2,                       // at least 2 nanoseconds
+        .use_rdtsc = args.use_rdtsc
     };
 
     if (debug("bench_params"))

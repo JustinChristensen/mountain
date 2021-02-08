@@ -15,12 +15,12 @@ enum msrs {
     PERF_GLOBAL_CTRL = 0x38f
 };
 
-static uint64_t rdmsr(unsigned msr) {
-    uint64_t hi;
-    uint64_t lo;
-    asm volatile ("rdmsr": "=d" (hi), "=a" (lo) : "c" (msr));
-    return hi << 32 | lo;
-}
+// static uint64_t rdmsr(unsigned msr) {
+//     uint64_t hi;
+//     uint64_t lo;
+//     asm volatile ("rdmsr": "=d" (hi), "=a" (lo) : "c" (msr));
+//     return hi << 32 | lo;
+// }
 
 static char *eflags(unsigned flags, unsigned bit) {
     return (flags >> bit) & 1 ? "not available" : "available";

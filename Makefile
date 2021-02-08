@@ -25,7 +25,7 @@ $(ABS_TIME): absTime.hs
 	$(GHC) -o $@ $^
 
 run.txt: $(MOUNTAIN)
-	./$(MOUNTAIN) -b avx2 > $@
+	./$(MOUNTAIN) -b avx2 -t > $@
 
 .PHONY: mountain.svg
 mountain.svg: run.txt
