@@ -25,14 +25,18 @@ enum arg_type {
     SHIFT_SAMPLES,
     PRIME_CACHE,
     USE_RDTSC,
+    THROUGHPUT,
     BENCHMARK
 };
 
 enum benchmark {
     UINT64,
-    UINT64_SINK,
+    UINT64_SINK,        // TODO: use perf counters to determine if this is needed
     AVX2,
-    AVX2_SINK
+    AVX2_SINK,
+    L1_MAX,
+    L2_MAX,
+    L3_MAX
 };
 
 struct arg {
@@ -52,7 +56,7 @@ struct args {
             min_size_p2,     // size=2^n where n=[10,27] and min_size < max_size
             max_size_p2,
             shift_samples;
-    bool prime_cache, use_rdtsc;
+    bool prime_cache, use_rdtsc, throughput;
     enum benchmark benchmark;
 };
 
@@ -95,6 +99,9 @@ static void benchmark_val(char const *s, struct arg *arg) {
     else if (!strcmp(s, "uint64_sink")) arg->b = UINT64_SINK;
     else if (!strcmp(s, "avx2"))        arg->b = AVX2;
     else if (!strcmp(s, "avx2_sink"))   arg->b = AVX2_SINK;
+    else if (!strcmp(s, "l1_max"))      arg->b = L1_MAX;
+    else if (!strcmp(s, "l2_max"))      arg->b = L2_MAX;
+    else if (!strcmp(s, "l3_max"))      arg->b = L3_MAX;
     else {
         arg->type = INVALID_VAL;
         fprintf(stderr, "%s is not a known benchmark\n", s);
@@ -164,7 +171,7 @@ static void print_usage(FILE *handle, char const *prog) {
     fprintf(handle, "usage: %s [options]\n\n", prog);
     fprintf(handle, "Generate a memory mountain\n\n");
     fprintf(handle, "options:\n");
-    fprintf(handle, optfmt, "-b", "Benchmark: uint64 (default), uint64_sink, avx2, avx2_sink");
+    fprintf(handle, optfmt, "-b", "Benchmark: uint64 (default), uint64_sink, avx2, avx2_sink, l1_max, l2_max, l3_max");
     fprintf(handle, optfmt, "-n, --stride-interval", "Interval to increase the stride by (+= 2).");
     fprintf(handle, optfmt, "-s, --start-stride", "Starting stride (1).");
     fprintf(handle, optfmt, "-e, --end-stride", "Ending stride (32).");
@@ -172,7 +179,8 @@ static void print_usage(FILE *handle, char const *prog) {
     fprintf(handle, optfmt, "-a, --max-size", "Maximum size as a power of two (2^n where n = 27 or 128 MB).");
     fprintf(handle, optfmt, "--shift-samples", "Shift off the minimum sample after N samples (50).");
     fprintf(handle, optfmt, "--prime-cache", "Attempt to prime the cache before entering the test loop.");
-    fprintf(handle, optfmt, "-t", "Use rdtsc for tracking time.");
+    fprintf(handle, optfmt, "-t", "Use rdtsc for tracking time (does not work for _max benchmarks).");
+    fprintf(handle, optfmt, "-p", "Output as throughput measured in MB/s instead of (stride, size, time) points");
     fprintf(handle, "\n");
 }
 
@@ -203,6 +211,7 @@ static char const **parse_arg(struct arg *arg, char const **argv) {
     || _parse_arg("shift-samples", 0, SHIFT_SAMPLES, uint8_val, arg, &argv)
     || _parse_arg("prime-cache", 0, PRIME_CACHE, NULL, arg, &argv)
     || _parse_arg(NULL, 't', USE_RDTSC, NULL, arg, &argv)
+    || _parse_arg(NULL, 'p', THROUGHPUT, NULL, arg, &argv)
     ;
 
     // copy flag
@@ -235,6 +244,7 @@ static bool parse_args(struct args *args, char const *version, char const **argv
             case SHIFT_SAMPLES:     args->shift_samples = arg.u8; break;
             case PRIME_CACHE:       args->prime_cache = true; break;
             case USE_RDTSC:         args->use_rdtsc = true; break;
+            case THROUGHPUT:        args->throughput = true; break;
             case VERSION:
                 print_version(stdout, version);
                 exit(0);
@@ -278,7 +288,8 @@ static void debug_args(struct args const *args) {
         "  max_size_p2 = %hhu\n"
         "  shift_samples = %hhu\n"
         "  prime_cache = %s\n"
-        "  use_rdtsc = %s\n",
+        "  use_rdtsc = %s\n"
+        "  throughput = %s\n",
         args->stride_interval,
         args->start_stride,
         args->end_stride,
@@ -286,7 +297,8 @@ static void debug_args(struct args const *args) {
         args->max_size_p2,
         args->shift_samples,
         args->prime_cache ? "true" : "false",
-        args->use_rdtsc ? "true" : "false");
+        args->use_rdtsc ? "true" : "false",
+        args->throughput ? "true" : "false");
 }
 
 #define MAX_POWER 32
@@ -312,7 +324,7 @@ static uint64_t rdtsc() {
 }
 
 #define ONE_SEC_NS 1000000000
-static uint64_t now(bool use_rdtsc) {
+static uint64_t now(bool const use_rdtsc) {
     if (use_rdtsc) return rdtsc();
 
     struct timespec ts;
@@ -425,7 +437,7 @@ static uint64_t cycles_to_ns(uint64_t cycles) {
             fprintf(stderr, "processor base frequency (ghz * 10): %u\n", freq);
     }
 
-    return cycles * 10 / freq;            // 2.9 cycles per nanosecond
+    return cycles * 10 / freq;
 }
 
 static uint64_t bench(struct bench_params const p, void (*fn)(void *args), void *args) {
@@ -436,7 +448,7 @@ static uint64_t bench(struct bench_params const p, void (*fn)(void *args), void 
         (*fn)(args);
 
     do {
-        bool uts = p.use_rdtsc;
+        bool const uts = p.use_rdtsc;
         uint64_t start = now(uts);
         (*fn)(args);
         uint64_t elapsed = now(uts) - start;
@@ -496,6 +508,37 @@ static size_t element_size(enum benchmark b) {
     }
 }
 
+#define define_max(cache, size)                                                           \
+__attribute__((noinline))                                                                 \
+static void bench_##cache##_avx2(volatile __m256i *data, bool throughput) {               \
+    uint64_t const N = (size) / sizeof (__m256i);                                         \
+    for (uint64_t i = 0; i < N; i++) data[i];                                             \
+    _mm_lfence();                                                                         \
+                                                                                          \
+    uint64_t min_elapsed = UINT64_MAX;                                                    \
+                                                                                          \
+    for (int t = 0; t < 32; t++) {                                                        \
+        bool const uts = true;                                                            \
+        uint64_t start = now(uts);                                                        \
+                                                                                          \
+        _Pragma("unroll")                                                                 \
+        for (uint64_t i = 0; i < N; i++) data[i];                                         \
+        _mm_lfence();                                                                     \
+                                                                                          \
+        uint64_t elapsed = now(uts) - start;                                              \
+        if (uts) elapsed = cycles_to_ns(elapsed);                                         \
+                                                                                          \
+        if (elapsed < min_elapsed) min_elapsed = elapsed;                                 \
+    }                                                                                     \
+                                                                                          \
+    if (throughput) printf("%"PRIu64" MB/s\n", (size) * UINT64_C(1000) / min_elapsed);    \
+    else            printf("%u %u %"PRIu64"\n", 1, (size), min_elapsed);                  \
+}
+
+define_max(l1, 1 << 15)
+// define_max(l2, 1 << 18)
+// define_max(l3, 1 << 23)
+
 static char *benchmark_str(enum benchmark b) {
     switch (b) {
         default:
@@ -503,6 +546,9 @@ static char *benchmark_str(enum benchmark b) {
         case UINT64_SINK: return "uint64_sink";
         case AVX2:        return "avx2";
         case AVX2_SINK:   return "avx2_sink";
+        case L1_MAX:      return "l1_max";
+        case L2_MAX:      return "l2_max";
+        case L3_MAX:      return "l3_max";
     }
 }
 
@@ -516,7 +562,8 @@ int main(int argc, char const *argv[]) { (void) argc;
         .max_size_p2 = 27,  // 2^27 bytes or 128 MB
         .shift_samples = 60,
         .prime_cache = true,
-        .use_rdtsc = false
+        .use_rdtsc = false,
+        .throughput = false,
     };
 
     if (!parse_args(&args, "1.0.0", argv))
@@ -528,7 +575,7 @@ int main(int argc, char const *argv[]) { (void) argc;
     if (!validate_args(&args))
         return EXIT_FAILURE;
 
-    struct bench_params params = {
+    struct bench_params const params = {
         .prime_cache = args.prime_cache,        // run the test before entering the timing loop to try and prime the cache
         .k = 5,                                 // require k samples
         .max_samples = 300,                     // give it 300 chances to converge
@@ -544,20 +591,26 @@ int main(int argc, char const *argv[]) { (void) argc;
     if (debug("benchmark"))
         fprintf(stderr, "running benchmark: %s\n", benchmark_str(args.benchmark));
 
+
     volatile void *data = malloc(1 << args.max_size_p2);
     if (!data) {
         fprintf(stderr, "data allocation failed\n");
         return EXIT_FAILURE;
     }
 
-    for (unsigned size = 1 << args.max_size_p2; size >= 1U << args.min_size_p2; size >>= 1) {
-        for (unsigned stride = args.start_stride; stride <= args.end_stride; stride += args.stride_interval) {
-            struct read_data_args fargs = { data, size / element_size(args.benchmark), stride };
-            uint64_t time = bench(params, benchmarks[args.benchmark], &fargs);
-            printf("%u %u %"PRIu64"\n", stride, size, time);
-        }
+    if (args.benchmark == L1_MAX)       bench_l1_avx2(data, args.throughput);
+    else if (args.benchmark == L2_MAX);  // bench_l2_avx2(data, args.throughput);
+    else if (args.benchmark == L3_MAX);  // bench_l3_avx2(data, args.throughput);
+    else {
+        for (unsigned size = 1 << args.max_size_p2; size >= 1U << args.min_size_p2; size >>= 1) {
+            for (unsigned stride = args.start_stride; stride <= args.end_stride; stride += args.stride_interval) {
+                struct read_data_args fargs = { data, size / element_size(args.benchmark), stride };
+                uint64_t time = bench(params, benchmarks[args.benchmark], &fargs);
+                printf("%u %u %"PRIu64"\n", stride, size, time);
+            }
 
-        printf("\n");
+            printf("\n");
+        }
     }
 
     free((void *) data);
